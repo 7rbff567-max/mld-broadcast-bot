@@ -1,64 +1,117 @@
 import os
 import asyncio
+import threading
+
 import discord
 from discord.ext import commands
+from flask import Flask
 
-# إعداد الصلاحيات
+
+# =========================
+# سيرفر بسيط لـ Render
+# =========================
+
+app = Flask(__name__)
+
+
+@app.route("/")
+def home():
+    return "MLD Broadcast Bot is Online!"
+
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
+
+
+# =========================
+# إعداد بوت Discord
+# =========================
+
 intents = discord.Intents.default()
 intents.members = True
 
-# إعداد البوت
 bot = commands.Bot(
     command_prefix="!",
     intents=intents
 )
 
 
+# =========================
 # عند تشغيل البوت
+# =========================
+
 @bot.event
 async def on_ready():
+    print(f"✅ تم تسجيل الدخول كـ {bot.user}")
+
     try:
         synced = await bot.tree.sync()
-        print(f"✅ تم تسجيل الدخول كـ {bot.user}")
-        print(f"✅ تم تسجيل {len(synced)} أمر سلاش")
+
+        print(
+            f"✅ تم تسجيل "
+            f"{len(synced)} أمر سلاش"
+        )
+
     except Exception as error:
-        print(f"❌ فشل تسجيل أوامر السلاش: {error}")
+        print(
+            f"❌ فشل تسجيل أوامر السلاش: "
+            f"{error}"
+        )
 
 
-# إرسال رسالة خاصة لعضو واحد
-async def send_dm(member, message, semaphore):
+# =========================
+# إرسال رسالة لعضو
+# =========================
+
+async def send_dm(
+    member,
+    message,
+    semaphore
+):
+
     async with semaphore:
+
         try:
             await member.send(message)
 
-            # تأخير بسيط بين الإرسالات
             await asyncio.sleep(0.2)
 
             return True
 
         except discord.Forbidden:
-            # العضو قافل الخاص أو يمنع رسائل السيرفر
             return False
 
         except discord.HTTPException as error:
+
             print(
                 f"❌ فشل الإرسال إلى "
                 f"{member.id}: {error}"
             )
+
             return False
 
         except Exception as error:
+
             print(
-                f"❌ خطأ غير متوقع مع "
+                f"❌ خطأ مع "
                 f"{member.id}: {error}"
             )
+
             return False
 
 
+# =========================
 # أمر السلاش
+# =========================
+
 @bot.tree.command(
     name="broadcast",
-    description="إرسال رسالة خاصة لجميع أعضاء السيرفر"
+    description="إرسال رسالة خاصة لأعضاء السيرفر"
 )
 @discord.app_commands.describe(
     message="اكتب الرسالة التي تريد إرسالها"
@@ -71,8 +124,8 @@ async def broadcast(
     message: str
 ):
 
-    # يمنع استخدام الأمر في الخاص
     if interaction.guild is None:
+
         return await interaction.response.send_message(
             "❌ استخدم الأمر داخل السيرفر فقط.",
             ephemeral=True
@@ -80,89 +133,153 @@ async def broadcast(
 
     guild = interaction.guild
 
-    # أخذ الأعضاء واستبعاد البوتات
     members = [
+
         member
+
         for member in guild.members
+
         if not member.bot
+
     ]
 
-    # الرد مباشرة حتى لا تنتهي مهلة Discord
     await interaction.response.send_message(
+
         f"📢 بدأ إرسال الرسالة إلى "
         f"**{len(members)}** عضو..."
+
     )
 
-    # 10 عمليات إرسال في نفس الوقت
+    # إرسال إلى 10 أعضاء في نفس الوقت
+
     semaphore = asyncio.Semaphore(10)
 
     tasks = [
+
         send_dm(
             member,
             message,
             semaphore
         )
+
         for member in members
+
     ]
 
     results = await asyncio.gather(
+
         *tasks,
+
         return_exceptions=True
+
     )
 
-    # حساب النتائج
     success = sum(
+
         result is True
+
         for result in results
+
     )
 
     failed = len(results) - success
 
-    # تعديل رسالة البداية وإظهار النتيجة
     await interaction.edit_original_response(
+
         content=(
+
             "✅ اكتمل الإرسال!\n"
+
             f"📨 تم الإرسال: **{success}**\n"
+
             f"❌ فشل الإرسال: **{failed}**"
+
         )
+
     )
 
 
-# إذا حاول شخص غير أدمن استخدام الأمر
+# =========================
+# أخطاء أمر السلاش
+# =========================
+
 @broadcast.error
 async def broadcast_error(
-    interaction: discord.Interaction,
+    interaction,
     error
 ):
 
     if isinstance(
+
         error,
+
         discord.app_commands.MissingPermissions
+
     ):
-        message = "❌ هذا الأمر للأدمن فقط."
+
+        message = (
+            "❌ هذا الأمر للأدمن فقط."
+        )
 
     else:
+
         print(
             f"❌ Broadcast Error: "
             f"{repr(error)}"
         )
 
-        message = "❌ حدث خطأ أثناء تنفيذ الأمر."
+        message = (
+            "❌ حدث خطأ أثناء تنفيذ الأمر."
+        )
 
-    # إرسال الخطأ بطريقة مناسبة
     if interaction.response.is_done():
+
         await interaction.followup.send(
+
             message,
+
             ephemeral=True
+
         )
+
     else:
+
         await interaction.response.send_message(
+
             message,
+
             ephemeral=True
+
         )
 
 
-# تشغيل البوت باستخدام متغير Render
-bot.run(
-    os.getenv("DISCORD_TOKEN")
+# =========================
+# تشغيل سيرفر Render
+# =========================
+
+web_thread = threading.Thread(
+
+    target=run_web,
+
+    daemon=True
+
 )
+
+web_thread.start()
+
+
+# =========================
+# تشغيل البوت
+# =========================
+
+token = os.getenv(
+    "DISCORD_TOKEN"
+)
+
+if not token:
+
+    raise RuntimeError(
+        "لم يتم العثور على DISCORD_TOKEN"
+    )
+
+bot.run(token)
